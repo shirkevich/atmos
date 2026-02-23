@@ -146,10 +146,16 @@ func TestSetup(t *testing.T) {
 	}
 }
 
-func TestSetupFiles_NoADCSecretAndNoADCFile(t *testing.T) {
+func TestSetupFiles_NoADCSecretAndNoADCFile_FallsBackToDefaults(t *testing.T) {
+	// When no ADC credentials file exists and no env vars are set,
+	// resolveADCClientCredentials falls back to the public gcloud defaults.
+	// This enables CI environments (e.g. GitHub Actions with WIF) where
+	// no ADC file exists.
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(tmp, "missing.json"))
+	t.Setenv("ATMOS_GCP_ADC_CLIENT_SECRET", "")
+	os.Unsetenv("ATMOS_GCP_ADC_CLIENT_SECRET")
 
 	ctx := context.Background()
 	providerName := "gcp-adc"
@@ -159,9 +165,9 @@ func TestSetupFiles_NoADCSecretAndNoADCFile(t *testing.T) {
 		ProjectID:   "test-project",
 	}
 
-	_, err := SetupFiles(ctx, testRealm, providerName, "setup-identity", creds)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "application-default login")
+	paths, err := SetupFiles(ctx, testRealm, providerName, "setup-identity", creds)
+	require.NoError(t, err)
+	assert.NotEmpty(t, paths, "SetupFiles should write credential files using default gcloud credentials")
 }
 
 func TestCleanup(t *testing.T) {

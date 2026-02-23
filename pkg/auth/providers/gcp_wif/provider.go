@@ -183,11 +183,25 @@ func (p *Provider) Authenticate(ctx context.Context) (types.ICredentials, error)
 }
 
 // getOIDCToken retrieves the OIDC token from the configured source.
+// When token_source is not configured, it auto-detects GitHub Actions
+// by checking for the ACTIONS_ID_TOKEN_REQUEST_URL environment variable.
 func (p *Provider) getOIDCToken(ctx context.Context) (string, error) {
 	defer perf.Track(nil, "gcp_wif.getOIDCToken")()
 
 	if p.spec.TokenSource == nil {
-		return "", fmt.Errorf("%w: token_source not configured", errUtils.ErrInvalidProviderConfig)
+		// Auto-detect GitHub Actions: if ACTIONS_ID_TOKEN_REQUEST_URL is set,
+		// default to URL-based token retrieval (same as github/oidc provider).
+		if os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" {
+			p.spec.TokenSource = &types.WIFTokenSource{
+				Type: TokenSourceTypeURL,
+				// Auto-construct the OIDC audience from the WIF pool/provider config.
+				// This is the same audience used in the STS exchange and must match
+				// what the WIF provider expects in the JWT.
+				Audience: p.wifAudience(),
+			}
+		} else {
+			return "", fmt.Errorf("%w: token_source not configured", errUtils.ErrInvalidProviderConfig)
+		}
 	}
 
 	switch p.spec.TokenSource.Type {
@@ -255,12 +269,17 @@ func (p *Provider) getTokenFromURL(ctx context.Context) (string, error) {
 	if u.Hostname() == "" {
 		return "", fmt.Errorf("%w: token URL host is required", errUtils.ErrInvalidProviderConfig)
 	}
-	allowedHosts := p.spec.TokenSource.AllowedHosts
-	if fromEnv && len(allowedHosts) == 0 {
-		allowedHosts = []string{"token.actions.githubusercontent.com"}
-	}
-	if len(allowedHosts) > 0 && !hostAllowed(u, allowedHosts) {
-		return "", fmt.Errorf("%w: token URL host %q is not allowed; set token_source.allowed_hosts to override", errUtils.ErrInvalidProviderConfig, u.Hostname())
+	// When the URL comes from the environment (ACTIONS_ID_TOKEN_REQUEST_URL),
+	// skip host validation — the env var is set by the CI runner itself and
+	// cannot be tampered with by workflow code. This is consistent with how
+	// the github/oidc provider handles it and avoids issues with GitHub's
+	// dynamic hostnames (e.g. "run-actions-3-azure-eastus.actions.githubusercontent.com").
+	// Only user-configured URLs (token_source.url) are subject to host checks.
+	if !fromEnv {
+		allowedHosts := p.spec.TokenSource.AllowedHosts
+		if len(allowedHosts) > 0 && !hostAllowed(u, allowedHosts) {
+			return "", fmt.Errorf("%w: token URL host %q is not allowed; set token_source.allowed_hosts to override", errUtils.ErrInvalidProviderConfig, u.Hostname())
+		}
 	}
 
 	// Add audience parameter if specified.
@@ -319,6 +338,14 @@ func hostAllowed(u *url.URL, allowedHosts []string) bool {
 		if allowed == "" {
 			continue
 		}
+		// Support suffix matching with wildcard prefix (e.g., "*.actions.githubusercontent.com").
+		if strings.HasPrefix(allowed, "*.") {
+			suffix := allowed[1:] // Keep the dot: ".actions.githubusercontent.com".
+			if strings.HasSuffix(host, suffix) {
+				return true
+			}
+			continue
+		}
 		if strings.EqualFold(allowed, u.Host) || strings.EqualFold(allowed, host) {
 			return true
 		}
@@ -326,10 +353,23 @@ func hostAllowed(u *url.URL, allowedHosts []string) bool {
 	return false
 }
 
+// wifAudience constructs the WIF audience string from the provider's config fields.
+// This is used both for the STS token exchange and as the default OIDC audience
+// when auto-detecting GitHub Actions.
+func (p *Provider) wifAudience() string {
+	return fmt.Sprintf(
+		"https://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
+		p.spec.ProjectNumber,
+		p.poolID(),
+		p.providerID(),
+	)
+}
+
 // exchangeToken exchanges an OIDC token for a Google federated token via STS.
 func (p *Provider) exchangeToken(ctx context.Context, oidcToken string) (*oauth2.Token, error) {
 	defer perf.Track(nil, "gcp_wif.exchangeToken")()
 
+	// STS audience uses the // prefix (no scheme), per Google STS convention.
 	audience := fmt.Sprintf(
 		"//iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 		p.spec.ProjectNumber,

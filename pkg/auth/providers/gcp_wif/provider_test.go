@@ -407,7 +407,13 @@ func TestWithHTTPClient(t *testing.T) {
 	assert.Same(t, custom, p.httpClient)
 }
 
-func TestGetOIDCToken_NilTokenSource(t *testing.T) {
+func TestGetOIDCToken_NilTokenSource_NoGitHubActions(t *testing.T) {
+	// When token_source is nil AND not in GitHub Actions, should error.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	os.Unsetenv("ACTIONS_ID_TOKEN_REQUEST_URL")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	os.Unsetenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+
 	p := &Provider{
 		spec: &types.GCPWorkloadIdentityFederationProviderSpec{},
 	}
@@ -415,6 +421,64 @@ func TestGetOIDCToken_NilTokenSource(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errUtils.ErrInvalidProviderConfig)
 	assert.Contains(t, err.Error(), "token_source not configured")
+}
+
+func TestGetOIDCToken_NilTokenSource_GitHubActionsAutoDetect(t *testing.T) {
+	// When token_source is nil but ACTIONS_ID_TOKEN_REQUEST_URL is set,
+	// should auto-detect GitHub Actions and use URL-based token retrieval.
+	// Host validation is skipped for env-sourced URLs (consistent with github/oidc).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("Skipping: unable to bind local listener: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer test-gha-token", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value": "auto-detected-oidc-token"}`))
+	}))
+	server.Listener = ln
+	server.StartTLS()
+	defer server.Close()
+
+	// Simulate GitHub Actions environment.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "test-gha-token")
+
+	p := &Provider{
+		spec: &types.GCPWorkloadIdentityFederationProviderSpec{
+			// No TokenSource configured — should auto-detect GitHub Actions.
+		},
+	}
+	p.WithHTTPClient(server.Client())
+
+	token, tokenErr := p.getOIDCToken(context.Background())
+	require.NoError(t, tokenErr)
+	assert.Equal(t, "auto-detected-oidc-token", token)
+}
+
+func TestGetOIDCToken_NilTokenSource_GitHubActionsAutoDetect_SetsURLTypeAndAudience(t *testing.T) {
+	// Verify that auto-detect sets TokenSource.Type to "url" and constructs the audience.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.actions.githubusercontent.com/foo")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	os.Unsetenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+
+	p := &Provider{
+		spec: &types.GCPWorkloadIdentityFederationProviderSpec{
+			ProjectNumber:              "697406265814",
+			WorkloadIdentityPoolID:     "github-actions",
+			WorkloadIdentityProviderID: "github-provider",
+		},
+	}
+
+	// After getOIDCToken runs (even if it errors), TokenSource should be set.
+	_, _ = p.getOIDCToken(context.Background())
+	require.NotNil(t, p.spec.TokenSource, "auto-detect should create synthetic TokenSource")
+	assert.Equal(t, TokenSourceTypeURL, p.spec.TokenSource.Type)
+	assert.Equal(t,
+		"https://iam.googleapis.com/projects/697406265814/locations/global/workloadIdentityPools/github-actions/providers/github-provider",
+		p.spec.TokenSource.Audience,
+		"auto-detect should construct WIF audience from spec fields",
+	)
 }
 
 func TestGetOIDCToken_UnknownType(t *testing.T) {
@@ -607,6 +671,117 @@ func TestHostAllowed_CaseInsensitive(t *testing.T) {
 	assert.True(t, hostAllowed(u, []string{"example.com"}))
 }
 
+func TestHostAllowed_WildcardSuffix(t *testing.T) {
+	// Host validation only applies to user-configured URLs (token_source.url),
+	// not env-sourced URLs (ACTIONS_ID_TOKEN_REQUEST_URL). These tests verify
+	// the wildcard matching logic for user-configured allowed_hosts.
+	tests := []struct {
+		name         string
+		host         string
+		allowedHosts []string
+		expected     bool
+	}{
+		{
+			name:         "wildcard matches subdomain",
+			host:         "https://run-actions-3-azure-eastus.actions.githubusercontent.com/token",
+			allowedHosts: []string{"*.actions.githubusercontent.com"},
+			expected:     true,
+		},
+		{
+			name:         "wildcard matches token subdomain",
+			host:         "https://token.actions.githubusercontent.com/token",
+			allowedHosts: []string{"*.actions.githubusercontent.com"},
+			expected:     true,
+		},
+		{
+			name:         "wildcard does not match different domain",
+			host:         "https://evil.example.com/token",
+			allowedHosts: []string{"*.actions.githubusercontent.com"},
+			expected:     false,
+		},
+		{
+			name:         "wildcard does not match bare domain",
+			host:         "https://actions.githubusercontent.com/token",
+			allowedHosts: []string{"*.actions.githubusercontent.com"},
+			expected:     false,
+		},
+		{
+			name:         "wildcard case insensitive",
+			host:         "https://Run-Actions.ACTIONS.GITHUBUSERCONTENT.COM/token",
+			allowedHosts: []string{"*.actions.githubusercontent.com"},
+			expected:     true,
+		},
+		{
+			name:         "mixed exact and wildcard",
+			host:         "https://custom.example.com/token",
+			allowedHosts: []string{"*.actions.githubusercontent.com", "custom.example.com"},
+			expected:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.host)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, hostAllowed(u, tt.allowedHosts))
+		})
+	}
+}
+
+func TestGetTokenFromURL_EnvSourcedSkipsHostValidation(t *testing.T) {
+	// When URL comes from ACTIONS_ID_TOKEN_REQUEST_URL (env), host validation is skipped.
+	// This is consistent with the github/oidc provider and avoids issues with
+	// GitHub's dynamic hostnames like "run-actions-3-azure-eastus.actions.githubusercontent.com".
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("Skipping: unable to bind local listener: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value": "env-sourced-token"}`))
+	}))
+	server.Listener = ln
+	server.StartTLS()
+	defer server.Close()
+
+	// Set env var to a non-GitHub host (would normally be rejected).
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
+
+	p := &Provider{
+		spec: &types.GCPWorkloadIdentityFederationProviderSpec{
+			TokenSource: &types.WIFTokenSource{
+				Type: TokenSourceTypeURL,
+				// No URL — falls back to env var. No AllowedHosts — skipped for env.
+			},
+		},
+	}
+	p.WithHTTPClient(server.Client())
+
+	token, err := p.getTokenFromURL(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "env-sourced-token", token)
+}
+
+func TestGetTokenFromURL_UserConfiguredURLStillValidated(t *testing.T) {
+	// When URL is user-configured (not from env), host validation still applies.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	os.Unsetenv("ACTIONS_ID_TOKEN_REQUEST_URL")
+
+	p := &Provider{
+		spec: &types.GCPWorkloadIdentityFederationProviderSpec{
+			TokenSource: &types.WIFTokenSource{
+				Type:         TokenSourceTypeURL,
+				URL:          "https://evil.example.com/token",
+				AllowedHosts: []string{"good.example.com"},
+			},
+		},
+	}
+
+	_, err := p.getTokenFromURL(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+}
+
 func TestEnvironment_NoProject(t *testing.T) {
 	p := &Provider{
 		spec: &types.GCPWorkloadIdentityFederationProviderSpec{},
@@ -720,9 +895,6 @@ func TestGetTokenFromURL_FromEnvVar(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	serverURL, err := url.Parse(server.URL)
-	require.NoError(t, err)
-
 	// Set ACTIONS_ID_TOKEN_REQUEST_URL to point to test server.
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
 
@@ -730,8 +902,8 @@ func TestGetTokenFromURL_FromEnvVar(t *testing.T) {
 		spec: &types.GCPWorkloadIdentityFederationProviderSpec{
 			TokenSource: &types.WIFTokenSource{
 				Type: TokenSourceTypeURL,
-				// No URL set — should fall back to env var.
-				AllowedHosts: []string{serverURL.Hostname()},
+				// No URL set — falls back to env var.
+				// No AllowedHosts needed — host validation is skipped for env-sourced URLs.
 			},
 		},
 	}
@@ -1004,6 +1176,10 @@ func TestAuthenticate_ValidationFails(t *testing.T) {
 }
 
 func TestAuthenticate_OIDCTokenFails(t *testing.T) {
+	// Ensure no GitHub Actions auto-detect.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	os.Unsetenv("ACTIONS_ID_TOKEN_REQUEST_URL")
+
 	p := &Provider{
 		spec: &types.GCPWorkloadIdentityFederationProviderSpec{
 			ProjectNumber:              "123",
