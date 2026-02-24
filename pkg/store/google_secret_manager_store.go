@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -31,8 +32,13 @@ type GSMClient interface {
 }
 
 // GSMStore is an implementation of the Store interface for Google Secret Manager.
+// The GCP client is created lazily on first use to allow auth credentials to be
+// established before the client is needed (e.g., via atmos auth --identity).
 type GSMStore struct {
 	client         GSMClient
+	clientOnce     sync.Once
+	clientErr      error
+	options        GSMStoreOptions
 	projectID      string
 	prefix         string
 	stackDelimiter *string
@@ -52,31 +58,16 @@ type GSMStoreOptions struct {
 var _ Store = (*GSMStore)(nil)
 
 // NewGSMStore initializes a new Google Secret Manager Store.
+// The GCP client is created lazily on first use, not during construction.
+// This allows auth credentials to be established after config loading but
+// before the store is actually used (e.g., when processing YAML functions).
 func NewGSMStore(options GSMStoreOptions) (Store, error) {
 	if options.ProjectID == "" {
 		return nil, ErrProjectIDRequired
 	}
 
-	ctx := context.Background()
-
-	// Use unified GCP authentication
-	clientOpts := gcp.GetClientOptions(gcp.AuthOptions{
-		Credentials: gcp.GetCredentialsFromStore(options.Credentials),
-	})
-
-	client, err := secretmanager.NewClient(ctx, clientOpts...)
-	if err != nil {
-		// Close the client to prevent resource leaks
-		if client != nil {
-			if closeErr := client.Close(); closeErr != nil {
-				log.Trace("Failed to close Google Secret Manager client after creation error", "error", closeErr)
-			}
-		}
-		return nil, fmt.Errorf(errWrapFormat, ErrCreateClient, err)
-	}
-
 	store := &GSMStore{
-		client:    client,
+		options:   options,
 		projectID: options.ProjectID,
 	}
 
@@ -94,6 +85,39 @@ func NewGSMStore(options GSMStoreOptions) (Store, error) {
 	store.replication = createReplicationFromLocations(options.Locations)
 
 	return store, nil
+}
+
+// getClient returns the lazily-initialized GCP Secret Manager client.
+// The client is created on first call and reused for subsequent calls.
+// This deferred initialization allows auth credentials (e.g., GOOGLE_OAUTH_ACCESS_TOKEN)
+// to be set by the auth system before the client needs them.
+func (s *GSMStore) getClient() (GSMClient, error) {
+	s.clientOnce.Do(func() {
+		ctx := context.Background()
+
+		// Use unified GCP authentication.
+		clientOpts := gcp.GetClientOptions(gcp.AuthOptions{
+			Credentials: gcp.GetCredentialsFromStore(s.options.Credentials),
+		})
+
+		client, err := secretmanager.NewClient(ctx, clientOpts...)
+		if err != nil {
+			// Close the client to prevent resource leaks.
+			if client != nil {
+				if closeErr := client.Close(); closeErr != nil {
+					log.Trace("Failed to close Google Secret Manager client after creation error", "error", closeErr)
+				}
+			}
+			s.clientErr = fmt.Errorf(errWrapFormat, ErrCreateClient, err)
+			return
+		}
+		s.client = client
+	})
+
+	if s.clientErr != nil {
+		return nil, s.clientErr
+	}
+	return s.client, nil
 }
 
 func createReplicationFromLocations(locations *[]string) *secretmanagerpb.Replication {
@@ -143,6 +167,11 @@ func (s *GSMStore) getKey(stack string, component string, key string) (string, e
 }
 
 func (s *GSMStore) createSecret(ctx context.Context, secretID string) (*secretmanagerpb.Secret, error) {
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+
 	parent := fmt.Sprintf("projects/%s", s.projectID)
 	createSecretReq := &secretmanagerpb.CreateSecretRequest{
 		Parent:   parent,
@@ -152,7 +181,7 @@ func (s *GSMStore) createSecret(ctx context.Context, secretID string) (*secretma
 		},
 	}
 
-	secret, err := s.client.CreateSecret(ctx, createSecretReq)
+	secret, err := client.CreateSecret(ctx, createSecretReq)
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			switch st.Code() {
@@ -172,6 +201,11 @@ func (s *GSMStore) createSecret(ctx context.Context, secretID string) (*secretma
 }
 
 func (s *GSMStore) addSecretVersion(ctx context.Context, secret *secretmanagerpb.Secret, value string) error {
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+
 	addVersionReq := &secretmanagerpb.AddSecretVersionRequest{
 		Parent: secret.GetName(),
 		Payload: &secretmanagerpb.SecretPayload{
@@ -179,7 +213,7 @@ func (s *GSMStore) addSecretVersion(ctx context.Context, secret *secretmanagerpb
 		},
 	}
 
-	_, err := s.client.AddSecretVersion(ctx, addVersionReq)
+	_, err = client.AddSecretVersion(ctx, addVersionReq)
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			switch st.Code() {
@@ -249,6 +283,11 @@ func (s *GSMStore) Get(stack string, component string, key string) (any, error) 
 		return nil, ErrEmptyKey
 	}
 
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), gsmOperationTimeout)
 	defer cancel()
 
@@ -262,7 +301,7 @@ func (s *GSMStore) Get(stack string, component string, key string) (any, error) 
 	name := fmt.Sprintf("projects/%s/secrets/%s/versions/latest", s.projectID, secretID)
 
 	// Access the secret version
-	result, err := s.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
+	result, err := client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
 		Name: name,
 	})
 	if err != nil {
@@ -292,22 +331,27 @@ func (s *GSMStore) GetKey(key string) (interface{}, error) {
 		return nil, ErrEmptyKey
 	}
 
-	// Use the key directly as the secret name
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	// Use the key directly as the secret name.
 	secretName := key
 
-	// If prefix is set, prepend it to the key
+	// If prefix is set, prepend it to the key.
 	if s.prefix != "" {
 		secretName = s.prefix + "_" + key
 	}
 
-	// Construct the full secret name
+	// Construct the full secret name.
 	fullSecretName := fmt.Sprintf("projects/%s/secrets/%s/versions/latest", s.projectID, secretName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), gsmOperationTimeout)
 	defer cancel()
 
-	// Access the secret version
-	resp, err := s.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
+	// Access the secret version.
+	resp, err := client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
 		Name: fullSecretName,
 	})
 	if err != nil {
