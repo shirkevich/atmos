@@ -371,3 +371,22 @@ func TestResolveADCClientCredentials_SecretOnlyFromEnv(t *testing.T) {
 	assert.Equal(t, "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com", clientID)
 	assert.Equal(t, "env-secret-only", clientSecret)
 }
+
+func TestResolveADCClientCredentials_CustomIDWithoutSecret(t *testing.T) {
+	// Custom client ID without a matching secret must fall back to the full
+	// default pair — a mismatched pair (custom ID + default secret) would
+	// cause invalid_client errors during OAuth token refresh.
+	t.Setenv("ATMOS_GCP_ADC_CLIENT_ID", "custom-client-id")
+	t.Setenv("ATMOS_GCP_ADC_CLIENT_SECRET", "")
+
+	// Ensure no ADC file interferes.
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(tmp, "missing.json"))
+
+	clientID, clientSecret, err := resolveADCClientCredentials()
+	require.NoError(t, err)
+	// Both should be defaults — custom ID is ignored when secret is absent.
+	assert.Equal(t, "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com", clientID)
+	assert.Equal(t, "d-FL95Q19q7MQmFpd7hHD0Ty", clientSecret)
+}
