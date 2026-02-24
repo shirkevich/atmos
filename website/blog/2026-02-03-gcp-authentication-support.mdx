@@ -5,37 +5,72 @@ authors: [shirkevich]
 tags: [feature]
 ---
 
-Atmos now supports first-class Google Cloud authentication alongside AWS and Azure, with provider-scoped file isolation and a unified auth experience.
+Atmos now supports first-class Google Cloud authentication alongside AWS and Azure, with provider-scoped file isolation, GitHub Actions auto-detection, and a unified auth experience.
 <!--truncate-->
 
 ## What Changed
-- Added GCP providers: `gcp/adc` and `gcp/workload-identity-federation`.
+- Added GCP providers: `gcp/adc` (local dev) and `gcp/workload-identity-federation` (CI/CD).
 - Added GCP identities: `gcp/service-account` and `gcp/project`.
 - Implemented provider-scoped file isolation at `~/.config/atmos/gcp/<provider-name>/...`.
 - Integrated GCP auth with `atmos auth login`, `atmos auth whoami`, and Terraform execution.
+- GitHub Actions OIDC is auto-detected when `ACTIONS_ID_TOKEN_REQUEST_URL` is set, so `token_source` configuration is optional in CI.
+- The WIF audience is auto-constructed from the pool and provider config.
+- Google Secret Manager store uses lazy client initialization, so auth commands work before GCP credentials exist.
+- ADC client ID and secret are treated as an atomic pair to prevent mismatched OAuth credentials.
 
 ## Why This Matters
 - Use the same auth flow across AWS, Azure, and GCP.
 - Avoid long-lived keys in CI/CD with Workload Identity Federation.
 - Keep credentials isolated per provider and identity, without touching user `gcloud` config.
+- Zero-config WIF in GitHub Actions: just set `id-token: write` permission and configure the provider.
 
 ## How to Use It
-Example configuration:
+
+### GitHub Actions (WIF)
+
+Configure the WIF provider in `atmos.yaml`:
+
+```yaml
+auth:
+  providers:
+    gcp-wif:
+      kind: gcp/workload-identity-federation
+      spec:
+        project_id: my-project
+        project_number: "123456789012"
+        workload_identity_pool_id: github-pool
+        workload_identity_provider_id: github-provider
+
+  identities:
+    terraform-ci:
+      kind: gcp/service-account
+      via:
+        provider: gcp-wif
+      principal:
+        service_account_email: terraform@my-project.iam.gserviceaccount.com
+```
+
+In your workflow, grant OIDC permissions and authenticate:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+
+steps:
+  - run: atmos auth login --identity terraform-ci
+  - run: atmos terraform apply mycomponent -s dev-usw2
+```
+
+### Local Development (ADC)
 
 ```yaml
 auth:
   providers:
     gcp-adc:
       kind: gcp/adc
-      project_id: my-project
-
-    gcp-wif:
-      kind: gcp/workload-identity-federation
-      project_number: "123456789012"
-      workload_identity_pool_id: github-pool
-      workload_identity_provider_id: github-provider
-      token_source:
-        type: url
+      spec:
+        project_id: my-project
 
   identities:
     terraform:

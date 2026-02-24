@@ -15,6 +15,8 @@ The `auth` section configures how Atmos obtains and manages credentials for clou
 ## Use Cases
 
 - **AWS SSO Integration:** Authenticate via AWS IAM Identity Center (SSO) for seamless credential management.
+- **GCP Workload Identity Federation:** Keyless authentication from GitHub Actions (and other CI providers) to GCP.
+- **GCP Application Default Credentials:** Interactive authentication via `gcloud` for local development.
 - **Role Assumption Chains:** Configure multi-account access through role assumption.
 - **Credential Storage:** Securely store and retrieve credentials using system keyrings.
 - **Environment Injection:** Automatically inject credentials as environment variables for components.
@@ -81,13 +83,13 @@ auth:
 
 <dl>
   <dt>`kind`</dt>
-  <dd>Provider type (`aws-sso`, `static`).</dd>
+  <dd>Provider type (`aws-sso`, `gcp/adc`, `gcp/workload-identity-federation`, `static`).</dd>
 
   <dt>`start_url`</dt>
-  <dd>AWS SSO portal URL.</dd>
+  <dd>AWS SSO portal URL (for `aws-sso`).</dd>
 
   <dt>`region`</dt>
-  <dd>AWS region for SSO.</dd>
+  <dd>Region for SSO or GCP.</dd>
 
   <dt>`default`</dt>
   <dd>Mark as default provider.</dd>
@@ -134,7 +136,7 @@ auth:
 
 <dl>
   <dt>`kind`</dt>
-  <dd>Identity type (`aws`).</dd>
+  <dd>Identity type (`aws`, `gcp/service-account`, `gcp/project`).</dd>
 
   <dt>`via.provider`</dt>
   <dd>Provider to use for authentication.</dd>
@@ -320,6 +322,176 @@ auth:
 
 When using this identity, the specified environment variables are automatically set.
 
+### GCP Workload Identity Federation (GitHub Actions)
+
+Use keyless authentication from GitHub Actions to GCP. In GitHub Actions, `token_source` is auto-detected from the `ACTIONS_ID_TOKEN_REQUEST_URL` environment variable, so no explicit token source configuration is needed.
+
+<File title="atmos.yaml">
+```yaml
+auth:
+  providers:
+    gcp-wif:
+      kind: gcp/workload-identity-federation
+      spec:
+        project_id: my-gcp-project
+        project_number: "123456789012"
+        workload_identity_pool_id: github-pool
+        workload_identity_provider_id: github-provider
+
+  identities:
+    terraform-ci:
+      kind: gcp/service-account
+      via:
+        provider: gcp-wif
+      principal:
+        service_account_email: terraform@my-gcp-project.iam.gserviceaccount.com
+```
+</File>
+
+In your GitHub Actions workflow, grant OIDC token permissions:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
+
+Then authenticate and run Terraform:
+
+```bash
+atmos auth login --identity terraform-ci
+atmos terraform apply mycomponent -s dev-usw2
+```
+
+### GCP Application Default Credentials (Local Development)
+
+For local development, use `gcp/adc` which leverages your existing `gcloud auth application-default login` credentials:
+
+<File title="atmos.yaml">
+```yaml
+auth:
+  providers:
+    gcp-adc:
+      kind: gcp/adc
+      spec:
+        project_id: my-gcp-project
+
+  identities:
+    terraform:
+      kind: gcp/service-account
+      default: true
+      via:
+        provider: gcp-adc
+      principal:
+        service_account_email: terraform@my-gcp-project.iam.gserviceaccount.com
+```
+</File>
+
+### GCP Dual Provider (Local + CI)
+
+Configure both providers so the same identities work locally and in CI:
+
+<File title="atmos.yaml">
+```yaml
+auth:
+  providers:
+    gcp-adc:
+      kind: gcp/adc
+      spec:
+        project_id: my-gcp-project
+
+    gcp-wif:
+      kind: gcp/workload-identity-federation
+      spec:
+        project_id: my-gcp-project
+        project_number: "123456789012"
+        workload_identity_pool_id: github-pool
+        workload_identity_provider_id: github-provider
+
+  identities:
+    terraform:
+      kind: gcp/service-account
+      default: true
+      via:
+        provider: gcp-adc
+      principal:
+        service_account_email: terraform@my-gcp-project.iam.gserviceaccount.com
+
+    terraform-ci:
+      kind: gcp/service-account
+      via:
+        provider: gcp-wif
+      principal:
+        service_account_email: terraform@my-gcp-project.iam.gserviceaccount.com
+```
+</File>
+
+Use `terraform` locally and `terraform-ci` in GitHub Actions:
+
+```bash
+# Local development
+atmos auth login --identity terraform
+
+# CI (GitHub Actions)
+atmos auth login --identity terraform-ci
+```
+
+**GCP WIF Provider Fields:**
+
+<dl>
+  <dt>`spec.project_id`</dt>
+  <dd>GCP project ID.</dd>
+
+  <dt>`spec.project_number`</dt>
+  <dd>GCP project number (required for WIF).</dd>
+
+  <dt>`spec.workload_identity_pool_id`</dt>
+  <dd>Workload Identity Federation pool ID.</dd>
+
+  <dt>`spec.workload_identity_provider_id`</dt>
+  <dd>Workload Identity Federation provider ID.</dd>
+
+  <dt>`spec.service_account_email`</dt>
+  <dd>Service account to impersonate (optional at provider level).</dd>
+
+  <dt>`spec.token_source`</dt>
+  <dd>OIDC token source configuration. Optional in GitHub Actions (auto-detected).</dd>
+
+  <dt>`spec.token_source.type`</dt>
+  <dd>Token source type: `url`, `environment`, or `file`.</dd>
+
+  <dt>`spec.token_source.url`</dt>
+  <dd>URL to fetch OIDC token from (for `type: url`).</dd>
+
+  <dt>`spec.token_source.environment_variable`</dt>
+  <dd>Environment variable containing the OIDC token (for `type: environment`).</dd>
+
+  <dt>`spec.token_source.file_path`</dt>
+  <dd>Path to file containing the OIDC token (for `type: file`).</dd>
+
+  <dt>`spec.token_source.audience`</dt>
+  <dd>OIDC audience. Auto-constructed from pool/provider config when omitted.</dd>
+
+  <dt>`spec.scopes`</dt>
+  <dd>OAuth scopes (defaults to `cloud-platform`).</dd>
+</dl>
+
+**GCP Service Account Identity Fields:**
+
+<dl>
+  <dt>`principal.service_account_email`</dt>
+  <dd>Target service account email (required).</dd>
+
+  <dt>`principal.delegates`</dt>
+  <dd>Optional delegation chain for multi-hop impersonation.</dd>
+
+  <dt>`principal.lifetime`</dt>
+  <dd>Token lifetime (e.g., `3600s`). Defaults to 1 hour.</dd>
+
+  <dt>`principal.project_id`</dt>
+  <dd>GCP project ID (derived from service account email if not set).</dd>
+</dl>
+
 ## Credential Realm Isolation
 
 By default, Atmos stores credentials in a shared location that all Atmos projects on the same machine can access.
@@ -357,12 +529,14 @@ Without a realm, credentials are stored at:
 
 ```
 ~/.config/atmos/aws/{provider}/credentials
+~/.config/atmos/gcp/{provider}/adc/{identity}/application_default_credentials.json
 ```
 
 With a realm configured, credentials are stored at:
 
 ```
 ~/.config/atmos/{realm}/aws/{provider}/credentials
+~/.config/atmos/{realm}/gcp/{provider}/adc/{identity}/application_default_credentials.json
 ```
 
 ### Realm Naming Rules
@@ -413,17 +587,19 @@ atmos auth switch prod-admin
 
 ## Best Practices
 
-1. **Use SSO Over Static Credentials:** AWS SSO provides short-lived credentials and centralized access management.
+1. **Use SSO/WIF Over Static Credentials:** AWS SSO and GCP Workload Identity Federation provide short-lived credentials without long-lived keys.
 
 2. **Define Environment-Specific Identities:** Create separate identities for dev, staging, and production with appropriate permissions.
 
 3. **Use Role Chains for Cross-Account:** Rather than configuring SSO access to every account, use role assumption chains from a central account.
 
-4. **Leverage System Keyring:** Use the system keyring for credential storage to benefit from OS-level security.
+4. **Use Dual Providers for Local + CI:** Configure both `gcp/adc` (local) and `gcp/workload-identity-federation` (CI) providers with separate identities for seamless development.
 
-5. **Set Appropriate Session Durations:** Balance security and convenience when configuring session durations.
+5. **Leverage System Keyring:** Use the system keyring for credential storage to benefit from OS-level security.
 
-6. **Mark Default Identities:** Set `default: true` on commonly used identities to streamline workflows.
+6. **Set Appropriate Session Durations:** Balance security and convenience when configuring session durations.
+
+7. **Mark Default Identities:** Set `default: true` on commonly used identities to streamline workflows.
 
 ## Related
 
