@@ -39,6 +39,11 @@ const (
 	AtmosYamlFuncAwsRegion               = "!aws.region"
 	AtmosYamlFuncAwsOrganizationID       = "!aws.organization_id"
 
+	// GCP YAML functions.
+	AtmosYamlFuncGcpProjectID          = "!gcp.project_id"
+	AtmosYamlFuncGcpServiceAccountEmail = "!gcp.service_account_email"
+	AtmosYamlFuncGcpOrganizationID     = "!gcp.organization_id"
+
 	DefaultYAMLIndent = 2
 
 	// Cache statistics constants.
@@ -63,6 +68,9 @@ var (
 		AtmosYamlFuncAwsCallerIdentityUserID,
 		AtmosYamlFuncAwsRegion,
 		AtmosYamlFuncAwsOrganizationID,
+		AtmosYamlFuncGcpProjectID,
+		AtmosYamlFuncGcpServiceAccountEmail,
+		AtmosYamlFuncGcpOrganizationID,
 	}
 
 	// AtmosYamlTagsMap provides O(1) lookup for custom tag checking.
@@ -84,6 +92,9 @@ var (
 		AtmosYamlFuncAwsCallerIdentityUserID: true,
 		AtmosYamlFuncAwsRegion:               true,
 		AtmosYamlFuncAwsOrganizationID:       true,
+		AtmosYamlFuncGcpProjectID:           true,
+		AtmosYamlFuncGcpServiceAccountEmail: true,
+		AtmosYamlFuncGcpOrganizationID:      true,
 	}
 
 	// ParsedYAMLCache stores parsed yaml.Node objects and their position information

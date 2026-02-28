@@ -198,6 +198,16 @@ func processSimpleTags(
 	if input == u.AtmosYamlFuncAwsOrganizationID && !skipFunc(skip, u.AtmosYamlFuncAwsOrganizationID) {
 		return processTagAwsOrganizationID(atmosConfig, input, stackInfo), true, nil
 	}
+	// GCP YAML functions - exact match since they take no arguments.
+	if input == u.AtmosYamlFuncGcpProjectID && !skipFunc(skip, u.AtmosYamlFuncGcpProjectID) {
+		return processTagGcpProjectID(atmosConfig, input, stackInfo), true, nil
+	}
+	if input == u.AtmosYamlFuncGcpServiceAccountEmail && !skipFunc(skip, u.AtmosYamlFuncGcpServiceAccountEmail) {
+		return processTagGcpServiceAccountEmail(atmosConfig, input, stackInfo), true, nil
+	}
+	if input == u.AtmosYamlFuncGcpOrganizationID && !skipFunc(skip, u.AtmosYamlFuncGcpOrganizationID) {
+		return processTagGcpOrganizationID(atmosConfig, input, stackInfo), true, nil
+	}
 	return nil, false, nil
 }
 

@@ -38,6 +38,9 @@ func RegisterDefaults() {
 		mustRegister(registry, NewAwsCallerIdentityUserIDFunction())
 		mustRegister(registry, NewAwsRegionFunction())
 		mustRegister(registry, NewAwsOrganizationIDFunction())
+		mustRegister(registry, NewGcpProjectIDFunction())
+		mustRegister(registry, NewGcpServiceAccountEmailFunction())
+		mustRegister(registry, NewGcpOrganizationIDFunction())
 	})
 }
 

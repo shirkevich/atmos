@@ -1,0 +1,153 @@
+---
+title: "!gcp.project_id"
+sidebar_position: 16
+sidebar_label: "!gcp.project_id"
+sidebar_class_name: command
+description: Retrieve the GCP project ID of the current caller identity
+---
+
+import File from '@site/src/components/File'
+import Intro from '@site/src/components/Intro'
+
+<Intro>
+The `!gcp.project_id` YAML function retrieves the GCP project ID of the current caller identity
+by inspecting the active authentication context, environment variables, or Application Default Credentials.
+</Intro>
+
+## Usage
+
+The `!gcp.project_id` function takes no parameters:
+
+```yaml
+  # Get the GCP project ID of the current caller identity
+  project_id: !gcp.project_id
+```
+
+## Arguments
+
+This function takes no arguments. It uses GCP credentials from the environment or the
+Atmos authentication context if configured.
+
+## How It Works
+
+When processing the `!gcp.project_id` YAML function, Atmos resolves the project ID using
+the following priority order:
+
+1. **Atmos GCP Auth Context** (highest priority) - If an active GCP identity is configured
+   via `atmos auth login` or the `--identity` flag, Atmos uses the `project_id` from that context.
+
+2. **Environment Variables** - Falls back to well-known GCP environment variables:
+   - `GOOGLE_CLOUD_PROJECT`
+   - `GCLOUD_PROJECT`
+   - `CLOUDSDK_CORE_PROJECT`
+
+3. **Application Default Credentials (ADC)** - As a last resort, uses ADC to discover
+   the project associated with the current credentials (e.g., `gcloud auth application-default login`).
+
+:::note Atmos Auth Integration
+When using [Atmos Authentication](/cli/commands/auth/usage), the function automatically uses credentials
+from the active GCP identity. This enables seamless integration with service account impersonation,
+Workload Identity Federation, and other authentication methods configured in your `atmos.yaml`.
+:::
+
+## Caching
+
+The `!gcp.project_id` function caches its results in memory for the duration of the CLI invocation.
+This means:
+
+- Multiple uses of `!gcp.project_id` in the same command only make one identity resolution call
+- Different authentication contexts get separate cache entries
+- Each new CLI command starts with a fresh cache
+
+This caching significantly improves performance when the function is used in multiple places
+across your stack manifests.
+
+:::note Type-Aware Merging
+Atmos supports type-aware merging of YAML functions and concrete values, allowing them to coexist in the inheritance chain without type conflicts.
+See the full explanation: [YAML Function Merging](/reference/yaml-function-merging)
+:::
+
+## Examples
+
+### Basic Usage
+
+<File title="stack.yaml">
+```yaml
+components:
+  terraform:
+    my-component:
+      vars:
+        # Inject the GCP project ID into Terraform variables
+        project_id: !gcp.project_id
+```
+</File>
+
+### Use in Provider Configuration
+
+<File title="stack.yaml">
+```yaml
+components:
+  terraform:
+    gke-cluster:
+      vars:
+        project: !gcp.project_id
+```
+</File>
+
+### Resource Tags
+
+<File title="stack.yaml">
+```yaml
+components:
+  terraform:
+    vpc:
+      vars:
+        project_id: !gcp.project_id
+        labels:
+          project: !gcp.project_id
+          managed_by: "atmos"
+```
+</File>
+
+### Multiple Components Using Project ID
+
+<File title="stack.yaml">
+```yaml
+components:
+  terraform:
+    # Project ID is fetched once and cached
+    vpc:
+      vars:
+        project: !gcp.project_id
+
+    gke:
+      vars:
+        project: !gcp.project_id  # Uses cached value
+
+    cloudsql:
+      vars:
+        project: !gcp.project_id  # Uses cached value
+```
+</File>
+
+## Error Handling
+
+If the function cannot resolve a GCP project ID from any source (auth context, environment
+variables, or ADC), Atmos will log an error and exit.
+
+Common error scenarios:
+- No GCP credentials configured
+- No project set in active credentials or environment variables
+- ADC not initialized (`gcloud auth application-default login` not run)
+
+## Considerations
+
+- **Requires a resolvable project ID** - The function fails if no project ID is found in any source
+- **ADC dependency** - When no auth context or env vars are configured, requires valid ADC
+- **Performance** - Results are cached per CLI invocation, so there is minimal overhead when used multiple times
+- **Complements other GCP functions** - Use alongside `!gcp.service_account_email` and `!gcp.organization_id`
+
+## Related Functions
+
+- [!gcp.service_account_email](/functions/yaml/gcp.service-account-email) - Get the GCP service account email
+- [!gcp.organization_id](/functions/yaml/gcp.organization-id) - Get the GCP organization ID

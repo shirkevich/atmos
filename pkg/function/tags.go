@@ -58,6 +58,15 @@ const (
 
 	// TagAwsOrganizationID returns the AWS Organization ID.
 	TagAwsOrganizationID = "aws.organization_id"
+
+	// TagGcpProjectID returns the GCP project ID.
+	TagGcpProjectID = "gcp.project_id"
+
+	// TagGcpServiceAccountEmail returns the GCP service account email.
+	TagGcpServiceAccountEmail = "gcp.service_account_email"
+
+	// TagGcpOrganizationID returns the GCP organization ID.
+	TagGcpOrganizationID = "gcp.organization_id"
 )
 
 // YAMLTagPrefix is the prefix used for YAML custom tags.
@@ -85,6 +94,9 @@ func AllTags() []string {
 		TagAwsCallerIdentityUserID,
 		TagAwsRegion,
 		TagAwsOrganizationID,
+		TagGcpProjectID,
+		TagGcpServiceAccountEmail,
+		TagGcpOrganizationID,
 	}
 }
 
@@ -107,6 +119,9 @@ var tagsMap = map[string]bool{
 	TagAwsCallerIdentityUserID: true,
 	TagAwsRegion:               true,
 	TagAwsOrganizationID:       true,
+	TagGcpProjectID:           true,
+	TagGcpServiceAccountEmail: true,
+	TagGcpOrganizationID:       true,
 }
 
 // IsValidTag checks if the given tag name is registered.

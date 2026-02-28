@@ -98,6 +98,18 @@ YAML supports three types of data: core, defined, and user-defined.
  - The [__`!aws.region`__](/functions/yaml/aws.region) YAML function retrieves the AWS region
    from the current SDK configuration.
 
+ - The [__`!aws.organization_id`__](/functions/yaml/aws.organization-id) YAML function retrieves the AWS Organization ID
+   by calling the AWS Organizations `DescribeOrganization` API.
+
+ - The [__`!gcp.project_id`__](/functions/yaml/gcp.project-id) YAML function retrieves the GCP project ID
+   from the active authentication context, environment variables, or Application Default Credentials.
+
+ - The [__`!gcp.service_account_email`__](/functions/yaml/gcp.service-account-email) YAML function retrieves the
+   GCP service account email of the current caller identity.
+
+ - The [__`!gcp.organization_id`__](/functions/yaml/gcp.organization-id) YAML function retrieves the GCP organization ID
+   for the current project by walking the project's resource ancestry.
+
 :::tip
 You can combine [Atmos Stack Manifest Templating](/templates) with Atmos YAML functions within the same stack configuration.
 Atmos processes templates first, followed by YAML functions, enabling you to dynamically provide parameters to the YAML functions.

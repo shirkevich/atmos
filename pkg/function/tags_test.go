@@ -28,6 +28,9 @@ func TestAllTags(t *testing.T) {
 		TagAwsCallerIdentityUserID,
 		TagAwsRegion,
 		TagAwsOrganizationID,
+		TagGcpProjectID,
+		TagGcpServiceAccountEmail,
+		TagGcpOrganizationID,
 	}
 
 	assert.Equal(t, len(expectedTags), len(tags))
@@ -57,6 +60,9 @@ func TestIsValidTag(t *testing.T) {
 		TagAwsCallerIdentityUserID,
 		TagAwsRegion,
 		TagAwsOrganizationID,
+		TagGcpProjectID,
+		TagGcpServiceAccountEmail,
+		TagGcpOrganizationID,
 	}
 
 	for _, tag := range expectedTags {
@@ -161,6 +167,9 @@ func TestTagConstants(t *testing.T) {
 	assert.Equal(t, "aws.caller_identity_user_id", TagAwsCallerIdentityUserID)
 	assert.Equal(t, "aws.region", TagAwsRegion)
 	assert.Equal(t, "aws.organization_id", TagAwsOrganizationID)
+	assert.Equal(t, "gcp.project_id", TagGcpProjectID)
+	assert.Equal(t, "gcp.service_account_email", TagGcpServiceAccountEmail)
+	assert.Equal(t, "gcp.organization_id", TagGcpOrganizationID)
 }
 
 func TestYAMLTag_RoundTrip(t *testing.T) {

@@ -1,0 +1,80 @@
+---
+slug: gcp-yaml-functions
+title: "New GCP YAML Functions"
+authors: [aknysh]
+tags: [feature]
+---
+
+Access GCP project, service account, and organization information directly in stack
+configuration with three new `!gcp.*` YAML functions.
+
+<!--truncate-->
+
+## What Changed
+
+Atmos now includes three new GCP YAML functions that retrieve caller identity information from
+the active GCP authentication context, environment variables, or Application Default Credentials:
+
+- `!gcp.project_id` — the active GCP project ID
+- `!gcp.service_account_email` — the service account email of the current caller
+- `!gcp.organization_id` — the numeric GCP organization ID
+
+```yaml
+components:
+  terraform:
+    my-component:
+      vars:
+        project_id: !gcp.project_id
+        service_account: !gcp.service_account_email
+        org_id: !gcp.organization_id
+```
+
+These complement the existing AWS context functions (`!aws.account_id`, `!aws.region`, etc.),
+bringing GCP to the same level of first-class support.
+
+## Why This Matters
+
+GCP project IDs and organization IDs are required in nearly every GCP Terraform component.
+Previously, users had to hardcode these values or use environment variable lookups. Now they are
+available dynamically:
+
+- **`!gcp.project_id`** — no more hardcoded project IDs across stacks and environments
+- **`!gcp.service_account_email`** — useful for IAM bindings and audit labels
+- **`!gcp.organization_id`** — required for organization policies, folder IAM, and cross-project governance
+
+## How to Use It
+
+All functions take no arguments and resolve credentials using the following priority order:
+
+1. **Atmos GCP Auth Context** — if `atmos auth login` is configured with a GCP identity
+2. **Environment Variables** — `GOOGLE_CLOUD_PROJECT`, etc.
+3. **Application Default Credentials** — `gcloud auth application-default login`
+
+```yaml
+components:
+  terraform:
+    gke-cluster:
+      vars:
+        project: !gcp.project_id
+
+    org-policy:
+      vars:
+        organization_id: !gcp.organization_id
+
+    iam-binding:
+      vars:
+        member: !gcp.service_account_email
+```
+
+Results are cached for the duration of the CLI invocation. `!gcp.organization_id` uses a separate
+cache since it calls the Cloud Resource Manager API. The other two share a single identity cache.
+
+The `!gcp.organization_id` function requires `resourcemanager.projects.getAncestry` permission
+(included in `roles/viewer`) and the project must belong to a GCP Organization.
+
+## Get Involved
+
+- Read the documentation for [!gcp.project_id](/functions/yaml/gcp.project-id),
+  [!gcp.service_account_email](/functions/yaml/gcp.service-account-email), and
+  [!gcp.organization_id](/functions/yaml/gcp.organization-id)
+- Report issues on [GitHub](https://github.com/cloudposse/atmos/issues)
