@@ -1522,6 +1522,7 @@ var (
 	ErrHelmLifecycleExternalTarget   = errors.New("helm release lifecycle flags require a Kubernetes target")
 	ErrHelmReleaseHistory            = errors.New("failed to inspect helm release history")
 	ErrHelmReleaseUninstall          = errors.New("failed to uninstall helm release")
+	ErrHelmReleaseOperation          = errors.New("helm release operation failed")
 )
 
 // Stack dependency (`depends_on`) resolution errors.
